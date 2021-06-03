@@ -49,6 +49,20 @@
         (db/select-one [User :id :last_login] :id (:id user)) ; Reload updated user
         user))))
 
+(with-redefs [metabase.public-settings.metastore/enable-enhancements? (constantly true)]
+  (metabase.test.integrations.ldap/with-ldap-server
+    (metabase.test.util/with-temporary-setting-values [ldap-enabled    true
+                                                       ldap-host       "localhost"
+                                                       ldap-port       (str (@#'metabase.test.integrations.ldap/get-ldap-port))
+                                                       ldap-bind-dn    "cn=Directory Manager"
+                                                       ldap-password   "password"
+                                                       ldap-user-base  "dc=metabase,dc=com"
+                                                       ldap-group-sync true
+                                                       ldap-group-base "dc=metabase,dc=com"]
+      (let [conn (clj-ldap.client/connect (@#'metabase.integrations.ldap/details->ldap-options
+                                           (@#'metabase.integrations.ldap-test/get-ldap-details)))]
+        (find-user* conn "fred.taylor@metabase.com" (@#'metabase.integrations.ldap/ldap-settings))))))
+
 (s/defn ^:private find-user* :- (s/maybe EEUserInfo)
   [ldap-connection :- LDAPConnectionPool
    username        :- su/NonBlankString
