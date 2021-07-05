@@ -69,39 +69,39 @@ describe("scenarios > filters > sql filters > field filter > Date", () => {
     });
   });
 
-  Object.entries(DATE_FILTER_SUBTYPES).forEach(
-    ([subType, { value, representativeResult }]) => {
-      describe(`should work for ${subType}`, () => {
-        beforeEach(() => {
-          FieldFilter.setWidgetType(subType);
-        });
+  Object.entries(DATE_FILTER_SUBTYPES).forEach(checkSubtype);
 
-        it("when set through the filter widget", () => {
-          dateFilterSelector({ filterType: subType, filterValue: value });
+  function checkSubtype([subType, { value, representativeResult }]) {
+    describe(`should work for ${subType}`, () => {
+      beforeEach(() => {
+        FieldFilter.setWidgetType(subType);
+      });
 
-          SQLFilter.runQuery();
+      it("when set through the filter widget", () => {
+        dateFilterSelector({ filterType: subType, filterValue: value });
 
-          cy.get(".Visualization").within(() => {
-            cy.findByText(representativeResult);
-          });
-        });
+        SQLFilter.runQuery();
 
-        it("when set as the default value for a required filter", () => {
-          dateFilterSelector({
-            filterType: subType,
-            filterValue: value,
-            isFilterRequired: true,
-          });
-
-          SQLFilter.runQuery();
-
-          cy.get(".Visualization").within(() => {
-            cy.findByText(representativeResult);
-          });
+        cy.get(".Visualization").within(() => {
+          cy.findByText(representativeResult);
         });
       });
-    },
-  );
+
+      it("when set as the default value for a required filter", () => {
+        dateFilterSelector({
+          filterType: subType,
+          filterValue: value,
+          isFilterRequired: true,
+        });
+
+        SQLFilter.runQuery();
+
+        cy.get(".Visualization").within(() => {
+          cy.findByText(representativeResult);
+        });
+      });
+    });
+  }
 });
 
 function openDateFilterPicker(isFilterRequired) {
