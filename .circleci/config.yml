@@ -1140,7 +1140,7 @@ workflows:
           matrix:
             parameters:
               edition: ["ee", "oss"]
-              test: ["admin", "binning", "collections", "dashboard", "onboarding", "native", "question", "sharing", "visualizations"]
+              test: ["admin", "binning", "collections", "dashboard", "filters", "onboarding", "native", "question", "sharing", "smoketests", "visualizations"]
           name: e2e-tests-<< matrix.test >>-<< matrix.edition >>
           requires:
             - build-uberjar-<< matrix.edition >>
