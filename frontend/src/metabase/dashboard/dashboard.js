@@ -399,9 +399,7 @@ export const saveDashboardAndCards = createThunkAction(
       }
 
       await dispatch(Dashboards.actions.update(dashboard));
-
-      // make sure that we've fully cleared out any dirty state from editing (this is overkill, but simple)
-      dispatch(fetchDashboard(dashboard.id, null, true)); // disable using query parameters when saving
+      dispatch(fetchDashboard(dashboard.id, null, true));
     };
   },
 );
@@ -663,7 +661,7 @@ function expandInlineCard(card) {
 export const fetchDashboard = createThunkAction(FETCH_DASHBOARD, function(
   dashId,
   queryParams,
-  enableDefaultParameters = true,
+  preserveParameters,
 ) {
   let result;
   return async function(dispatch, getState) {
@@ -712,13 +710,17 @@ export const fetchDashboard = createThunkAction(FETCH_DASHBOARD, function(
       result = await DashboardApi.get({ dashId: dashId });
     }
 
-    const parameterValues = {};
+    const oldParameterValues = getParameterValues(getState());
+    const newParameterValues = {};
+
     if (result.parameters) {
       for (const parameter of result.parameters) {
-        if (queryParams && queryParams[parameter.slug] != null) {
-          parameterValues[parameter.id] = queryParams[parameter.slug];
-        } else if (enableDefaultParameters && parameter.default != null) {
-          parameterValues[parameter.id] = parameter.default;
+        if (preserveParameters) {
+          newParameterValues[parameter.id] = oldParameterValues[parameter.id];
+        } else if (queryParams && queryParams[parameter.slug] != null) {
+          newParameterValues[parameter.id] = queryParams[parameter.slug];
+        } else if (parameter.default != null) {
+          newParameterValues[parameter.id] = parameter.default;
         }
       }
     }
@@ -747,7 +749,7 @@ export const fetchDashboard = createThunkAction(FETCH_DASHBOARD, function(
     return {
       ...normalize(result, dashboard), // includes `result` and `entities`
       dashboardId: dashId,
-      parameterValues: parameterValues,
+      parameterValues: newParameterValues,
     };
   };
 });
