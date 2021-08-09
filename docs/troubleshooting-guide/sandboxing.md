@@ -6,6 +6,8 @@
 - [Someone is in several groups but can't see the sandboxed data](#in-several-groups-cant-see-sandboxed-data)
 </div>
 
+FIXME: read this ticket https://metabase.zendesk.com/agent/tickets/576 and then explain which user ID applies when sandboxing pulses (it should be the user the email is being sent to, not the user who created the pulse).
+
 [Sandboxing data][sandboxing-your-data] gives some people access to only a subset of the data. (The term comes from the practice of putting children in a sandbox to play safely.) To implement sandboxing, Metabase runs a query that filters rows and/or selects a subset of columns from a table based on [the person's permissions][permissions]; the user's query then runs on the initial query's result.
 
 Several databases did not support [common table expressions][cte] when sandboxing was added to Metabase, so we implemented it using subqueries. Suppose you use the Notebook Editor to create a query like:

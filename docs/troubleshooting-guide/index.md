@@ -22,6 +22,8 @@ Problems, their causes, how to detect them, and how to fix them.
 
 - [Connecting to data warehouses with Metabase][datawarehouse].
 
+- [Managing security][security].
+
 - [Setting up LDAP][ldap].
 
 - [Setting up email][email].
@@ -89,6 +91,7 @@ Metabase adds new features and squashes bugs with each release. [Upgrading to th
 [releases]: https://github.com/metabase/metabase/releases
 [running]: ./running.html
 [safari]: https://support.apple.com/guide/safari-developer/develop-menu-dev39df999c1/mac
+[security]: ./security.html
 [server-logs]: ./server-logs.html
 [sandbox]: ./sandboxing.html
 [sync-fingerprint-scan]: ./sync-fingerprint-scan.html

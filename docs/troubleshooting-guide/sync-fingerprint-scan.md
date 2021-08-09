@@ -7,6 +7,8 @@
 - [Sync and scan take a very long time to run](#sync-scan-long-time)
 </div>
 
+FIXME: https://metabase.zendesk.com/agent/tickets/5739 suggests create a user for Metabase to connect to Presto with limited permissions so that it will only scan some tables to reduce sync traffic - should we document this?
+
 Metabase needs to know what's in your database in order to show tables and fields, populate dropdown menus, and suggest good visualizations, but loading all the data would be very slow (or simply impossible if you have a lot of data). It therefore does three things:
 
 1. Metabase periodically asks the database what tables are available, then asks which columns are available for each table. We call this *syncing*, and it happens [hourly or daily][sync-frequency] depending on how you've configured it. It's very fast with most relational databases, but can be slower with MongoDB and some [community-built database drivers][community-db-drivers].
