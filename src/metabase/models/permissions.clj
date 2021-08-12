@@ -1,33 +1,39 @@
 (ns metabase.models.permissions
   "Low-level Metabase permissions system definition and utility functions.
 
-  The metabase system is based around permissions *paths* that are granted to invdividual PermissionsGroups.
+  The Metabase permissions system is based around permissions *paths* that are granted to individual
+  [[metabase.models.permissions-group]]s.
 
   ### Object paths vs. User Paths
 
-  Permissions paths are slash-delimited strings such as `/db/1/schema/PUBLIC/`, and are used in two different
-  contexts:
+  Permissions paths are slash-delimited strings such as `/db/1/schema/PUBLIC/`. Each slash represents a different part
+  of the permissions path, and each permissions path must start and end with a slash. Permissions paths are used in
+  two different contexts:
 
-  - An [[ObjectPath]] represents a some sort of permission that is required for some *action* on an actual
-    \"object\" (i.e., row in the application database), such as a Database, Table, or Collection.
+  - An [[ObjectPath]] represents some sort of permission that is required in order to perform some *action* on an
+    actual *object* (i.e., something represented by a row in the application database), such as
+    a [[metabase.models.database]], [[metabase.models.table]], or [[metabase.models.collection]].
 
-  - A [[UserPath]] represents any *grant* that a [[metabase.models.permissions-group]] (equivalent to a *role*) can be
-    given. [[UserPath]] is a superset of [[ObjectPath]]. All [[UserPath]]s can be granted, but not all [[ObjectPath]]s
-    make sense as things that you can required in order to perform a given action. Additionally, some [[UserPath]]s
-    serve a subtractive \"anti-permissions\" in the sense that they take away or otherwise modify what the current
-    User has access to.
+  - A [[UserPath]] represents something that a [[metabase.models.permissions-group]] (equivalent to a *role*) can be
+    *granted* (given). [[UserPath]] is a superset of [[ObjectPath]]. All [[UserPath]]s can be granted, but not
+    all [[ObjectPath]]s make sense as things that can be required in order to perform an action. Some [[UserPath]]s
+    serve a subtractive \"anti-permissions\" in the sense that they take away access for things.
 
     The current User's permissions are automatically bound to [[metabase.api.common/*current-user-permissions-set*]]
-    by [[metabase.server.middleware.session/bind-current-user]] for every REST API request or when running
-    MetaBot/Pulse/Dashboard Subscription queries. This *permissions set* is the union of all [[UserPath]]s  granted to
-    all the Groups of which that User is a member.
+    by [[metabase.server.middleware.session/bind-current-user]] for every REST API request, and by others when queries
+    are ran in a non-API thread (e.g. for MetaBot or scheduled Dashboard Subscriptions). This *permissions set* is the
+    union of all [[UserPath]]s  granted to all the Groups of which that User is a member, and is used pervasively
+    throughout Metabase.
 
   ### The prefix system
 
-  Permissions paths are based on a prefix system -- if the current user has full permissions for Database 1,
-  `/db/1/` (i.e., the [[UserPath]] `/db/1/` is in their [[metabase.api.common/*current-user-permissions-set*]]), then
-  it is implied that they have permissions to *read* Database 1 as well, represented by the [[ObjectPath]]
+  Permissions paths are based on a prefix system -- if the current user has full permissions for Database 1, `/db/1/`,
+  then it is implied that they have permissions to *read* Database 1 as well, represented by the [[ObjectPath]]
   `/db/1/read/`. `/db/1/` thus implies permissions for anything starting with `/db/1/`, including `/db/1/read/`.
+
+  This prefix  system allows us  to easily and  efficiently query the application  database to find  relevant matching
+  permissions matching an [[ObjectPath]] or [[UserPath]] using `LIKE`; see [[metabase.models.database/pre-delete]] for
+  an example of the sort of efficient queries the prefix system facilitates.
 
   Admins are given permissions for `/`, which means they have permissions to do *anything*, such as `/db/1/read/` (read
   Database 1).
@@ -36,27 +42,21 @@
 
   There are two main types of [[ObjectPath]] permissions:
 
-  * _data permissions_ -- permissions to view, update, or run ad-hoc or SQL queries against a Database or Table. Data
-    permissions can be either an [[ObjectPath]] (i.e., permissions needed to perform an action) or a [[UserPath]] (i.e.,
-    permissions that can be granted to a PermissionsGroup)
+  * _data permissions_ -- permissions to view, update, or run ad-hoc or SQL queries against a Database or Table.
 
   * _Collection permissions_ -- permissions to view/curate/etc. an individual [[metabase.models.collection]] and the
-    items inside it. Collection permissions apply only to individual Collections and not to their child Collections,
-    which get their own permissions. Many objects such as Cards (a.k.a. *Saved Questions*) and Dashboards get their
-    permissions from the Collection in which they live. Like data permissions, Collection permissions are used as
-    both [[ObjectPath]]s and [[UserPath]]s.
+    items inside it. Collection permissions apply to individual Collections and to any non-Collection items inside that
+    Collection. Child Collections get their own permissions. Many objects such as Cards (a.k.a. *Saved Questions*) and
+    Dashboards get their permissions from the Collection in which they live.
 
-  Normally, a User is allowed to view (i.e., run the query for) a Saved Question if they have read permissions for the
-  Collection that Saved Question lives in, **or** if they have data permissions for the Database and Table(s) in
-  question; this behavior can be changed with *Segmented permissions* and *Block anti-permissions* mentioned below.
-  The main idea here is that some Users with more permissions can go create a curated set of Saved Questions they deem
-  appropriate for less-privileged Users to see, and put them in a Collection they can see. These Users would still be
-  prevented from poking around things on their own, however.
+  Data permissions and Collection permissions are both grantable, i.e. they can be considered to be
+  both [[ObjectPath]]s and [[UserPath]]s.
 
   ### Different types of [[UserPath]] (grantable) permissions and anti-permissions
 
   In addition to data permissions and Collection permissions, a User can also be granted three additional types of
-  permissions or \"anti-permissions\" (meaning this grant actually taketh away rather than giveth). [[UserPath]]
+  permissions. Some of these types are referred to as \"anti-permissions\" because they are subtractive grants that
+  take away permissions from what the User would otherwise have.
 
   * _root permissions_ -- permissions for `/`, i.e. full access for everything. Automatically granted to
     the [[metabase.models.permissions-group/admin]] \"magic group\" (see [[metabase.models.permissions-group]] for more
@@ -66,11 +66,14 @@
     a.k.a. segmented permissions, to any queries ran by the User when that User does not have full data permissions.
     Segmented permissions allow a User to run ad-hoc MBQL queries against the Table in question; regardless of whether
     they have relevant Collection permissions, queries against the sandboxed Table are rewritten to replace the Table
-    itself with a [[metabase-enterprise.sandbox.models.group-table-access-policy]], or _GTAP_. The _GTAP_ itself might
-    be a Saved Question or just a instructions to insert additional filter clauses based on the current User's *login
-    attributes* (see [[metabase-enterprise.sandbox.api.user]]). Additional things to know:
+    itself with a special type of nested query called a
+    [[metabase-enterprise.sandbox.models.group-table-access-policy]], or _GTAP_. Note that segmented permissions are
+    both additive and subtractive -- they are additive because they grant (sandboxed) ad-hoc query access for a Table,
+    but subtractive in that any access thru a Saved Question will now be sandboxed as well.
 
-    * Sandboxes permissions are only available in Metabase© Enterprise Edition™.
+    Additional things to know:
+
+    * Sandboxes permissions are only available in Metabase® Enterprise Edition™.
 
     * Only one GTAP may defined per-Group per-Table (this is an application-DB-level constraint). A User may have
       multiple applicable GTAPs if they are members of multiple groups that have sandboxed anti-perms for that Table; in
@@ -82,7 +85,7 @@
       done in the respective Toucan pre-delete actions. The QP will signal an error if the current user has segmented
       permissions but no matching GTAP exists.
 
-    * Segmented anti-permissions can also be used to enforce column-level permissions -- any column not returned by the
+    * Segmented permissions can also be used to enforce column-level permissions -- any column not returned by the
       underlying GTAP query is not allowed to be references by the parent query thru other means such as filter clauses.
       See [[metabase-enterprise.sandbox.query-processor.middleware.column-level-perms-check]].
 
@@ -90,43 +93,48 @@
       something incompatible (this constraint is in place so we other things continue to work transparently regardless
       of whether the Table is swapped out.)
 
-  * *block \"anti-permissions\"* are per-Group, per-Table grants that tell Metabase to disallow running Saved
+  * *block anti-permissions* are per-Group, per-Table grants that tell Metabase to disallow running Saved
     Questions unless the User has data permissions (in other words, disregard Collection permissions). See the
     `Determining query permissions` section below for more details. As with segmented anti-permissions, block
-    anti-permissions are only available in Metabase© Enterprise Edition™.
+    anti-permissions are only available in Metabase® Enterprise Edition™.
 
   ### Determining CRUD permissions in the REST API
 
-  REST API permissions checks are generally done in various `metabase.api.*` namespaces. `metabase.model.*` namespaces
-  typically define whether functions for whether the current User can perform the various CRUD actions for that model.
-  CRUD actions are defined by the [[metabase.models.interface/IObjectPermissions]] protocol; this protocol
+  REST API permissions checks are generally done in various `metabase.api.*` namespaces. Methods for determine whether
+  the current User can perform various CRUD actions are defined by
+  the [[metabase.models.interface/IObjectPermissions]] protocol; this protocol
   defines [[metabase.models.interface/can-read?]] (in the API sense, not in the run-query sense)
   and [[metabase.models.interface/can-write?]] as well as the newer [[metabase.models.interface/can-create?]] and
-  [[metabase.models.interface/can-update?]] methods.
+  [[metabase.models.interface/can-update?]] methods. Implementations for these methods live in `metabase.model.*`
+  namespaces.
 
   The implementation of these methods is up to individual models. The majority of implementations check whether
-  [[metabase.api.common/*current-user-permissions-set*]] grants permissions for a given [[ObjectPath]] (action)
-  using [[set-has-full-permissions?]] or set of [[ObjectPaths]]s using [[set-has-full-permissions-for-set?]]. _Full
-  permissions_ in this case means the User has permissions for _every_ [[ObjectPath]] in the set.
+  [[metabase.api.common/*current-user-permissions-set*]] includes permissions for a given [[ObjectPath]] (action)
+  using [[set-has-full-permissions?]], or for a set of [[ObjectPath]]s using [[set-has-full-permissions-for-set?]].
 
   Other implementations check whether a user has _partial permissions_ for a path or set
   using [[set-has-partial-permissions?]] or [[set-has-partial-permissions-for-set?]]. Partial permissions means that
   the User has permissions for some subpath of the path in question, e.g. `/db/1/read/` is considered to be partial
-  permissions for `/db/1/`. For example the [[metabase.models.interface/can-read?]] implementation
-  for [[metabase.models.database]] checks whether the current User has partial permissions for that database, e.g. a
-  User can fetch Database 1 from API endpoints (\"read\" it) if they have `/db/1/` (full) permissions, or if they have
-  `/db/1/native/` (ad-hoc SQL query) permissions, or `/db/1/schema/PUBLIC/table/2/query/`
-  (run ad-hoc queries against Table 2) permissions.
+  permissions for `/db/1/`. For example the [[metabase.models.interface/can-read?]] implementation for Database checks
+  whether the current User has *any* permissions for that Database; a User can fetch Database 1 from API
+  endpoints (\"read\" it) if they have any permissions starting with `/db/1/`, for example `/db/1/` itself (full
+  permissions), `/db/1/native/` (ad-hoc SQL query permissions), or permissions, or
+  `/db/1/schema/PUBLIC/table/2/query/` (run ad-hoc queries against Table 2 permissions).
 
   See documentation for [[metabase.models.interface/IObjectPermissions]] for more details.
 
   ### Determining query permissions
 
+  Normally, a User is allowed to view (i.e., run the query for) a Saved Question if they have read permissions for the
+  Collection in which Saved Question lives, **or** if they have data permissions for the Database and Table(s) the
+  Question accesses. The main idea here is that some Users with more permissions can go create a curated set of Saved
+  Questions they deem appropriate for less-privileged Users to see, and put them in a Collection they can see. These
+  Users would still be prevented from poking around things on their own, however.
+
   The Query Processor middleware in [[metabase.query-processor.middleware.permissions]],
   [[metabase-enterprise.sandbox.query-processor.middleware.row-level-restrictions]], and
   [[metabase-enterprise.forthcoming-block-permissions-middleware-namespace]] determines whether the current
   User has permissions to run the current query. Permissions are as follows:
-
 
   | Data perms? | Coll perms? | Block? | Segmented? | Can run? |
   | ----------- | ----------- | ------ | ---------- | -------- |
