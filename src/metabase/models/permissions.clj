@@ -1,4 +1,174 @@
 (ns metabase.models.permissions
+  "Low-level Metabase permissions system definition and utility functions.
+
+  The metabase system is based around permissions *paths* that are granted to invdividual PermissionsGroups.
+
+  ### Object paths vs. User Paths
+
+  Permissions paths are slash-delimited strings such as `/db/1/schema/PUBLIC/`, and are used in two different
+  contexts:
+
+  - An [[ObjectPath]] represents a some sort of permission that is required for some *action* on an actual
+    \"object\" (i.e., row in the application database), such as a Database, Table, or Collection.
+
+  - A [[UserPath]] represents any *grant* that a [[metabase.models.permissions-group]] (equivalent to a *role*) can be
+    given. [[UserPath]] is a superset of [[ObjectPath]]. All [[UserPath]]s can be granted, but not all [[ObjectPath]]s
+    make sense as things that you can required in order to perform a given action. Additionally, some [[UserPath]]s
+    serve a subtractive \"anti-permissions\" in the sense that they take away or otherwise modify what the current
+    User has access to.
+
+    The current User's permissions are automatically bound to [[metabase.api.common/*current-user-permissions-set*]]
+    by [[metabase.server.middleware.session/bind-current-user]] for every REST API request or when running
+    MetaBot/Pulse/Dashboard Subscription queries. This *permissions set* is the union of all [[UserPath]]s  granted to
+    all the Groups of which that User is a member.
+
+  ### The prefix system
+
+  Permissions paths are based on a prefix system -- if the current user has full permissions for Database 1,
+  `/db/1/` (i.e., the [[UserPath]] `/db/1/` is in their [[metabase.api.common/*current-user-permissions-set*]]), then
+  it is implied that they have permissions to *read* Database 1 as well, represented by the [[ObjectPath]]
+  `/db/1/read/`. `/db/1/` thus implies permissions for anything starting with `/db/1/`, including `/db/1/read/`.
+
+  Admins are given permissions for `/`, which means they have permissions to do *anything*, such as `/db/1/read/` (read
+  Database 1).
+
+  ### Different types of [[ObjectPath]] (action) permissions
+
+  There are two main types of [[ObjectPath]] permissions:
+
+  * _data permissions_ -- permissions to view, update, or run ad-hoc or SQL queries against a Database or Table. Data
+    permissions can be either an [[ObjectPath]] (i.e., permissions needed to perform an action) or a [[UserPath]] (i.e.,
+    permissions that can be granted to a PermissionsGroup)
+
+  * _Collection permissions_ -- permissions to view/curate/etc. an individual [[metabase.models.collection]] and the
+    items inside it. Collection permissions apply only to individual Collections and not to their child Collections,
+    which get their own permissions. Many objects such as Cards (a.k.a. *Saved Questions*) and Dashboards get their
+    permissions from the Collection in which they live. Like data permissions, Collection permissions are used as
+    both [[ObjectPath]]s and [[UserPath]]s.
+
+  Normally, a User is allowed to view (i.e., run the query for) a Saved Question if they have read permissions for the
+  Collection that Saved Question lives in, **or** if they have data permissions for the Database and Table(s) in
+  question; this behavior can be changed with *Segmented permissions* and *Block anti-permissions* mentioned below.
+  The main idea here is that some Users with more permissions can go create a curated set of Saved Questions they deem
+  appropriate for less-privileged Users to see, and put them in a Collection they can see. These Users would still be
+  prevented from poking around things on their own, however.
+
+  ### Different types of [[UserPath]] (grantable) permissions and anti-permissions
+
+  In addition to data permissions and Collection permissions, a User can also be granted three additional types of
+  permissions or \"anti-permissions\" (meaning this grant actually taketh away rather than giveth). [[UserPath]]
+
+  * _root permissions_ -- permissions for `/`, i.e. full access for everything. Automatically granted to
+    the [[metabase.models.permissions-group/admin]] \"magic group\" (see [[metabase.models.permissions-group]] for more
+    details) that gets created on first launch. All admin users are members of the `admin` group and vice versa.
+
+  * _segmented permissions_ -- a special grant for a Table that applies sandboxing, a.k.a. row-level permissions,
+    a.k.a. segmented permissions, to any queries ran by the User when that User does not have full data permissions.
+    Segmented permissions allow a User to run ad-hoc MBQL queries against the Table in question; regardless of whether
+    they have relevant Collection permissions, queries against the sandboxed Table are rewritten to replace the Table
+    itself with a [[metabase-enterprise.sandbox.models.group-table-access-policy]], or _GTAP_. The _GTAP_ itself might
+    be a Saved Question or just a instructions to insert additional filter clauses based on the current User's *login
+    attributes* (see [[metabase-enterprise.sandbox.api.user]]). Additional things to know:
+
+    * Sandboxes permissions are only available in Metabase© Enterprise Edition™.
+
+    * Only one GTAP may defined per-Group per-Table (this is an application-DB-level constraint). A User may have
+      multiple applicable GTAPs if they are members of multiple groups that have sandboxed anti-perms for that Table; in
+      that case, the QP signals an error if multiple GTAPs apply to a given Table for the current User (see
+      [[metabase-enterprise.sandbox.query-processor.middleware.row-level-restrictions/assert-one-gtap-per-table]]).
+
+    * Segmented (sandboxing) anti-permissions and GTAPs are tied together, and a Group should be given both (or both
+      should be deleted) at the same time. This is *not* currently enforced as a hard application DB constraint, but is
+      done in the respective Toucan pre-delete actions. The QP will signal an error if the current user has segmented
+      permissions but no matching GTAP exists.
+
+    * Segmented anti-permissions can also be used to enforce column-level permissions -- any column not returned by the
+      underlying GTAP query is not allowed to be references by the parent query thru other means such as filter clauses.
+      See [[metabase-enterprise.sandbox.query-processor.middleware.column-level-perms-check]].
+
+    * GTAPs are not allowed to add columns not present in the original Table, or change their effective type to
+      something incompatible (this constraint is in place so we other things continue to work transparently regardless
+      of whether the Table is swapped out.)
+
+  * *block \"anti-permissions\"* are per-Group, per-Table grants that tell Metabase to disallow running Saved
+    Questions unless the User has data permissions (in other words, disregard Collection permissions). See the
+    `Determining query permissions` section below for more details. As with segmented anti-permissions, block
+    anti-permissions are only available in Metabase© Enterprise Edition™.
+
+  ### Determining CRUD permissions in the REST API
+
+  REST API permissions checks are generally done in various `metabase.api.*` namespaces. `metabase.model.*` namespaces
+  typically define whether functions for whether the current User can perform the various CRUD actions for that model.
+  CRUD actions are defined by the [[metabase.models.interface/IObjectPermissions]] protocol; this protocol
+  defines [[metabase.models.interface/can-read?]] (in the API sense, not in the run-query sense)
+  and [[metabase.models.interface/can-write?]] as well as the newer [[metabase.models.interface/can-create?]] and
+  [[metabase.models.interface/can-update?]] methods.
+
+  The implementation of these methods is up to individual models. The majority of implementations check whether
+  [[metabase.api.common/*current-user-permissions-set*]] grants permissions for a given [[ObjectPath]] (action)
+  using [[set-has-full-permissions?]] or set of [[ObjectPaths]]s using [[set-has-full-permissions-for-set?]]. _Full
+  permissions_ in this case means the User has permissions for _every_ [[ObjectPath]] in the set.
+
+  Other implementations check whether a user has _partial permissions_ for a path or set
+  using [[set-has-partial-permissions?]] or [[set-has-partial-permissions-for-set?]]. Partial permissions means that
+  the User has permissions for some subpath of the path in question, e.g. `/db/1/read/` is considered to be partial
+  permissions for `/db/1/`. For example the [[metabase.models.interface/can-read?]] implementation
+  for [[metabase.models.database]] checks whether the current User has partial permissions for that database, e.g. a
+  User can fetch Database 1 from API endpoints (\"read\" it) if they have `/db/1/` (full) permissions, or if they have
+  `/db/1/native/` (ad-hoc SQL query) permissions, or `/db/1/schema/PUBLIC/table/2/query/`
+  (run ad-hoc queries against Table 2) permissions.
+
+  See documentation for [[metabase.models.interface/IObjectPermissions]] for more details.
+
+  ### Determining query permissions
+
+  The Query Processor middleware in [[metabase.query-processor.middleware.permissions]],
+  [[metabase-enterprise.sandbox.query-processor.middleware.row-level-restrictions]], and
+  [[metabase-enterprise.forthcoming-block-permissions-middleware-namespace]] determines whether the current
+  User has permissions to run the current query. Permissions are as follows:
+
+
+  | Data perms? | Coll perms? | Block? | Segmented? | Can run? |
+  | ----------- | ----------- | ------ | ---------- | -------- |
+  |          ⛔ |          ⛔ |     ⛔ |         ⛔ |        ⛔ |
+  |          ⛔ |          ⛔ |     ⛔ |         ✅ |        ⚠ |
+  |          ⛔ |          ⛔ |     ✅ |         ⛔ |        ⛔ |
+  |          ⛔ |          ⛔ |     ✅ |         ✅ |        ⛔ |
+  |          ⛔ |          ✅ |     ⛔ |         ⛔ |        ✅ |
+  |          ⛔ |          ✅ |     ⛔ |         ✅ |        ⚠ |
+  |          ⛔ |          ✅ |     ✅ |         ⛔ |        ⛔ |
+  |          ⛔ |          ✅ |     ✅ |         ✅ |        ⛔ |
+  |          ✅ |          ⛔ |     ⛔ |         ⛔ |        ✅ |
+  |          ✅ |          ⛔ |     ⛔ |         ✅ |        ✅ |
+  |          ✅ |          ⛔ |     ✅ |         ⛔ |        ✅ |
+  |          ✅ |          ⛔ |     ✅ |         ✅ |        ✅ |
+  |          ✅ |          ✅ |     ⛔ |         ⛔ |        ✅ |
+  |          ✅ |          ✅ |     ⛔ |         ✅ |        ✅ |
+  |          ✅ |          ✅ |     ✅ |         ⛔ |        ✅ |
+  |          ✅ |          ✅ |     ✅ |         ✅ |        ✅ |
+
+  (`⚠` = runs in sandboxed mode)
+
+  ### Known Permissions Paths
+
+  See [[valid-object-path-regex]] for an always-up-to-date list of permissions paths.
+
+    /collection/:id/                                ; read-write perms for a Coll and its non-Coll children
+    /collection/:id/read/                           ; read-only  perms for a Coll and its non-Coll children
+    /collection/root/                               ; read-write perms for the Root Coll and its non-Coll children
+    /colllection/root/read/                         ; read-only  perms for the Root Coll and its non-Coll children
+    /collection/namespace/:namespace/root/          ; read-write perms for the Root Coll of a non-default namespace (e.g. SQL Snippets)
+    /collection/namespace/:namespace/root/read/     ; read-only  perms for the Root Coll of a non-default namespace (e.g. SQL Snippets)
+    /db/:id/                                        ; full perms for a Database
+    /db/:id/native/                                 ; ad-hoc native query perms for a Database
+    /db/:id/schema/                                 ; ad-hoc MBQL query perms for all schemas in DB (does not include native queries)
+    /db/:id/schema/:name/                           ; ad-hoc MBQL query perms for a specific schema
+    /db/:id/schema/:name/table/:id/                 ; full perms for a Table
+    /db/:id/schema/:name/table/:id/read/            ; perms to fetch info about this Table from the DB
+    /db/:id/schema/:name/table/:id/query/           ; ad-hoc MBQL query perms for a Table
+    /db/:id/schema/:name/table/:id/query/segmented/ ; [GRANT ONLY] allow ad-hoc MBQL queries. Sandbox all queries against this Table.
+    /block/db/:id/                                  ; [GRANT ONLY] disallow queries against this DB unless User has data perms.
+    /                                               ; [GRANT ONLY] full root perms"
   (:require [clojure.core.match :refer [match]]
             [clojure.data :as data]
             [clojure.string :as str]
@@ -50,7 +220,14 @@
   (u.regex/rx (or #"[^\\/]" #"\\/" #"\\\\")))
 
 (def ^:private valid-object-path-regex
-  "Regex for a valid permissions path. `rx` macro is used to make the big-and-hairy macro somewhat readable."
+  "Regex for a valid [[ObjectPath]]. permissions path for an _object_, aka an actual thing that a User can or can't see, such a
+  Database, Table, or Collection. The permissions below are permissions that an object can require be present to
+  perform a particular action. This is not the same as a [[UserPath]], which is a permissions path that can be
+  assigned given to a particular PermissionsGroup. For example, a PermissionsGroup might have root permissions (`/`);
+  root permissions are a valid [[UserPath]], but not a valid [[ObjectPath]] since they don't refer to any actual
+  object.
+
+  This big-and-hairy regex is built with the [[metabase.util.regex/rx]] util fn to make it somewhat readable."
   (u.regex/rx "^/"
               ;; any path starting with /db/ is a DATA PERMISSIONS path
               (or
@@ -69,10 +246,7 @@
                                                          ;; .../read/ -> Perms to fetch the Metadata for Table
                                                          "read/"
                                                          ;; .../query/ -> Perms to run any sort of query against Table
-                                                         (and "query/"
-                                                              ;; .../segmented/ -> Permissions to run a query against
-                                                              ;; a Table using GTAP
-                                                              (opt "segmented/"))))))))))))
+                                                         "query/"))))))))))
                ;; any path starting with /collection/ is a COLLECTION permissions path
                (and "collection/"
                     (or
@@ -93,8 +267,21 @@
               "$"))
 
 (def segmented-perm-regex
-  "Regex that matches a segmented permission"
+  "Regex that matches a segmented permission. Used internally for some EE stuff
+  e.g. [[metabase-enterprise.sandbox.api.util/segmented-user?]]."
   (re-pattern (str #"^/db/\d+/schema/" path-char "*" #"/table/\d+/query/segmented/$")))
+
+(def ^:private valid-user-path-regex
+  "Regex for a valid [[UserPath]]."
+  (u.regex/rx
+   (or valid-object-path-regex
+       ;; segmented (sandboxing) query permissions
+       segmented-perm-regex
+       ;; any path starting with /block/ is for BLOCK anti-permissions.
+       ;; currently only supported at the DB level, e.g. /block/db/1/ => block collection-based access to Database 1
+       #"/block/db/\d+/"
+       ;; root permissions, i.e. for admin
+       #"^/$")))
 
 (defn- escape-path-component
   "Escape slashes in something that might be passed as a string part of a permissions path (e.g. DB schema name or
@@ -119,8 +306,9 @@
   (s/pred valid-object-path? "Valid permissions object path."))
 
 (def UserPath
-  "Schema for a valid permissions path that a user might possess in their `*current-user-permissions-set*`. This is the
-  same as what's allowed for `ObjectPath` but also includes root permissions, which admins will have."
+  "Schema for a valid permissions path that a user might possess in their
+  [[metabase.api.common/*current-user-permissions-set*]]. This is the same as what's allowed for [[ObjectPath]] but
+  also includes root permissions, which admins will have."
   (s/pred #(or (= % "/") (valid-object-path? %))
           "Valid user permissions path."))
 
