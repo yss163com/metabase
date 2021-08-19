@@ -590,10 +590,10 @@
 
                                                        ;; if user is controlling schedules
                                                        (:let-user-control-scheduling details)
-                                                       (sync.schedules/schedule-map->cron-strings (sync.schedules/scheduling schedules))
+                                                       (sync.schedules/schedule-map->cron-strings (sync.schedules/scheduling schedules))))))
                                                        ;; do nothing in the case that user is not in control of
                                                        ;; scheduling. leave them as they are in the db
-                                                       ))))
+
           (let [db (Database id)]
             (events/publish-event! :database-update db)
             ;; return the DB with the expanded schedules back in place
@@ -742,5 +742,16 @@
                                       [:in :collection_id (api/check-404 (seq (db/select-ids Collection :name schema)))])])
          (map table-api/card->virtual-table))))
 
+(api/defendpoint GET "/db-ids-with-deprecated-drivers"
+  "Return a list of database IDs using currently deprecated drivers."
+  []
+  (map
+    u/the-id
+    (filter
+      (fn [database]
+        (let [info (driver.u/available-drivers-info)
+              d    (driver.u/database->driver database)]
+          (some? (:superseded-by (d info)))))
+      (db/select-ids Database))))
 
 (api/define-routes)
