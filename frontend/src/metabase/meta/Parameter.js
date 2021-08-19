@@ -618,6 +618,10 @@ export function getValuePopulatedParameters(parameters, parameterValues) {
     : parameters;
 }
 
+function shouldIgnoreDefaultParameter(parameter, queryParamValue) {
+  return hasDefaultParameterValue(parameter) && queryParamValue === "";
+}
+
 export function hasDefaultParameterValue(parameter) {
   return parameter.default != null;
 }
@@ -629,18 +633,28 @@ export function hasParameterValue(value) {
 export function getParameterValueFromQueryParams(parameter, queryParams) {
   queryParams = queryParams || {};
   const maybeParameterValue = queryParams[parameter.slug];
-  return hasParameterValue(maybeParameterValue)
-    ? maybeParameterValue
-    : parameter.default;
+
+  if (shouldIgnoreDefaultParameter(parameter, maybeParameterValue)) {
+    return undefined;
+  } else if (hasParameterValue(maybeParameterValue)) {
+    return maybeParameterValue;
+  } else {
+    return parameter.default;
+  }
 }
 
 export function getParameterValuePairsFromQueryParams(parameters, queryParams) {
   return parameters
-    .map(parameter => [
-      parameter,
-      getParameterValueFromQueryParams(parameter, queryParams),
-    ])
-    .filter(([, value]) => hasParameterValue(value));
+    .map(parameter => {
+      return [
+        parameter,
+        getParameterValueFromQueryParams(parameter, queryParams),
+      ];
+    })
+    .filter(
+      ([parameter, value]) =>
+        hasDefaultParameterValue(parameter) || hasParameterValue(value),
+    );
 }
 
 export function getParameterValuesByIdFromQueryParams(parameters, queryParams) {
@@ -652,12 +666,36 @@ export function getParameterValuesByIdFromQueryParams(parameters, queryParams) {
   return Object.fromEntries(idValuePairs);
 }
 
+export function mapParametersToQueryParameters(
+  parameters,
+  parameterValuesById,
+) {
+  parameterValuesById = parameterValuesById || {};
+
+  const slugValuePairs = parameters
+    .map(parameter => {
+      const value = hasParameterValue(parameter.value)
+        ? parameter.value
+        : parameterValuesById[parameter.id];
+      return [parameter, value];
+    })
+    .filter(
+      ([parameter, value]) =>
+        hasDefaultParameterValue(parameter) || hasParameterValue(value),
+    )
+    .map(([parameter, value]) => [parameter.slug, value]);
+
+  return Object.fromEntries(slugValuePairs);
+}
+
 export function getParameterValuesBySlug(parameters, parameterValuesById) {
   parameterValuesById = parameterValuesById || {};
   const slugValuePairs = parameters
     .map(parameter => [
       parameter.slug,
-      parameter.value || parameterValuesById[parameter.id],
+      hasParameterValue(parameter.value)
+        ? parameter.value
+        : parameterValuesById[parameter.id],
     ])
     .filter(([, value]) => hasParameterValue(value));
 

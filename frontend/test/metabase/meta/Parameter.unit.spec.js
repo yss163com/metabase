@@ -11,6 +11,7 @@ import {
   getParameterValueFromQueryParams,
   getParameterValuePairsFromQueryParams,
   getParameterValuesByIdFromQueryParams,
+  mapParametersToQueryParameters,
   getParameterValuesBySlug,
   buildHiddenParametersSlugSet,
   getVisibleParameters,
@@ -540,13 +541,6 @@ describe("metabase/meta/Parameter", () => {
           [parameter3, "parameter3 default value"],
         ]);
       });
-
-      it("should handle undefined queryParams", () => {
-        expect(getParameterValuePairsFromQueryParams(parameters)).toEqual([
-          [parameter2, "parameter2 default value"],
-          [parameter3, "parameter3 default value"],
-        ]);
-      });
     });
 
     describe("getParameterValuesByIdFromQueryParams", () => {
@@ -564,6 +558,35 @@ describe("metabase/meta/Parameter", () => {
         expect(getParameterValuesByIdFromQueryParams(parameters)).toEqual({
           [parameter2.id]: "parameter2 default value",
           [parameter3.id]: "parameter3 default value",
+        });
+      });
+    });
+
+    describe("mapParametersToQueryParameters", () => {
+      it("should return a slug, value map of parameters", () => {
+        expect(
+          mapParametersToQueryParameters(parameters, {
+            [parameter1.id]: "parameter1 value",
+            [parameter2.id]: "parameter2 value",
+          }),
+        ).toEqual({
+          [parameter1.slug]: "parameter1 value",
+          [parameter2.slug]: "parameter2 value",
+        });
+      });
+
+      it("should include parameters that have defaults, even if they have a nil value", () => {
+        expect(
+          mapParametersToQueryParameters(parameters, {
+            [parameter1.id]: "parameter1 value",
+            [parameter2.id]: null,
+            [parameter3.id]: undefined,
+            [parameter4.id]: null,
+          }),
+        ).toEqual({
+          [parameter1.slug]: "parameter1 value",
+          [parameter2.slug]: null,
+          [parameter3.slug]: undefined,
         });
       });
     });
